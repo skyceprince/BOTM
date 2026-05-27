@@ -1,6 +1,5 @@
-require("dotenv").config();
-
 const express = require("express");
+const fs = require("fs");
 
 const {
   Client,
@@ -17,6 +16,8 @@ const PANEL_CHANNEL_ID = "1508935042431455493";
 const LOG_CHANNEL_ID = "1508988018290065539";
 const WORKING_CHANNEL_ID = "1508935220211089599";
 
+const HORAS_FILE = "./horas.json";
+
 const app = express();
 
 app.get("/", (req, res) => {
@@ -28,14 +29,35 @@ app.listen(process.env.PORT || 3000, () => {
 });
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 const servicios = new Map();
 const mensajesTrabajando = new Map();
 
-client.once("ready", async () => {
+function cargarHoras() {
+  if (!fs.existsSync(HORAS_FILE)) {
+    fs.writeFileSync(HORAS_FILE, JSON.stringify({}, null, 2));
+  }
 
+  return JSON.parse(fs.readFileSync(HORAS_FILE, "utf8"));
+}
+
+function guardarHoras(data) {
+  fs.writeFileSync(HORAS_FILE, JSON.stringify(data, null, 2));
+}
+
+function formatearTiempo(ms) {
+  const horas = Math.floor(ms / 3600000);
+  const minutos = Math.floor((ms % 3600000) / 60000);
+  return `${horas}h ${minutos}m`;
+}
+
+client.once("ready", async () => {
   console.log(`Bot conectado como ${client.user.tag}`);
 
   const canal = await client.channels.fetch(PANEL_CHANNEL_ID);
@@ -50,7 +72,6 @@ client.once("ready", async () => {
   );
 
   if (!existePanel) {
-
     const embed = new EmbedBuilder()
       .setTitle("🔧 MARTINEZ ZAFIRO SPARKLE")
       .setDescription(
@@ -61,7 +82,6 @@ client.once("ready", async () => {
       .setColor(0xff7a00);
 
     const row = new ActionRowBuilder().addComponents(
-
       new ButtonBuilder()
         .setCustomId("entrar_servicio")
         .setLabel("Entrar en servicio")
@@ -73,52 +93,42 @@ client.once("ready", async () => {
         .setLabel("Salir de servicio")
         .setEmoji("🔴")
         .setStyle(ButtonStyle.Danger)
-
     );
 
     await canal.send({
       embeds: [embed],
       components: [row]
     });
-
   }
-
 });
 
 client.on("interactionCreate", async (interaction) => {
-
   if (!interaction.isButton()) return;
 
   const userId = interaction.user.id;
-
   const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
 
   if (interaction.customId === "entrar_servicio") {
-
     if (servicios.has(userId)) {
-
       return interaction.reply({
         content: "⚠️ Ya estás en servicio.",
         ephemeral: true
       });
-
     }
 
     const entrada = Date.now();
-
     servicios.set(userId, entrada);
 
     const logEmbed = new EmbedBuilder()
       .setTitle("🟢 Entrada en servicio")
       .setDescription(
         `👤 Usuario: ${interaction.user}\n` +
+        `🆔 ID: ${userId}\n` +
         `🕒 Hora: <t:${Math.floor(entrada / 1000)}:F>`
       )
       .setColor(0xff7a00);
 
-    await logChannel.send({
-      embeds: [logEmbed]
-    });
+    await logChannel.send({ embeds: [logEmbed] });
 
     const workingChannel = await client.channels.fetch(WORKING_CHANNEL_ID);
 
@@ -141,77 +151,118 @@ client.on("interactionCreate", async (interaction) => {
       content: "✅ Entraste en servicio.",
       ephemeral: true
     });
-
   }
 
   if (interaction.customId === "salir_servicio") {
-
     if (!servicios.has(userId)) {
-
       return interaction.reply({
         content: "⚠️ No estás en servicio.",
         ephemeral: true
       });
-
     }
 
     const entrada = servicios.get(userId);
-
     const salida = Date.now();
-
     const total = salida - entrada;
 
-    const horas = Math.floor(total / 3600000);
-
-    const minutos = Math.floor((total % 3600000) / 60000);
-
     servicios.delete(userId);
+
+    const data = cargarHoras();
+
+    if (!data[userId]) {
+      data[userId] = [];
+    }
+
+    data[userId].push({
+      usuario: interaction.user.tag,
+      entrada,
+      salida,
+      total
+    });
+
+    guardarHoras(data);
 
     const logEmbed = new EmbedBuilder()
       .setTitle("🔴 Salida de servicio")
       .setDescription(
         `👤 Usuario: ${interaction.user}\n` +
+        `🆔 ID: ${userId}\n` +
         `🕒 Entrada: <t:${Math.floor(entrada / 1000)}:t>\n` +
         `🕒 Salida: <t:${Math.floor(salida / 1000)}:t>\n\n` +
-        `⏱️ Tiempo trabajado: ${horas}h ${minutos}m`
+        `⏱️ Tiempo trabajado: ${formatearTiempo(total)}`
       )
       .setColor(0xff7a00);
 
-    await logChannel.send({
-      embeds: [logEmbed]
-    });
+    await logChannel.send({ embeds: [logEmbed] });
 
     const workingChannel = await client.channels.fetch(WORKING_CHANNEL_ID);
-
     const workingMessageId = mensajesTrabajando.get(userId);
 
     if (workingMessageId) {
-
       try {
-
         const msg = await workingChannel.messages.fetch(workingMessageId);
-
         await msg.delete();
-
       } catch (error) {
-
-        console.log("No se pudo borrar mensaje:", error.message);
-
+        console.log("No se pudo borrar el mensaje de trabajando:", error.message);
       }
 
       mensajesTrabajando.delete(userId);
-
     }
 
     return interaction.reply({
-      content:
-        `✅ Saliste de servicio.\n` +
-        `⏱️ Tiempo trabajado: ${horas}h ${minutos}m`,
+      content: `✅ Saliste de servicio.\n⏱️ Tiempo trabajado: ${formatearTiempo(total)}`,
       ephemeral: true
     });
+  }
+});
 
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+
+  if (!message.content.startsWith("!horas")) return;
+
+  const args = message.content.split(" ");
+  const userId = args[1];
+
+  if (!userId) {
+    return message.reply("⚠️ Usa el comando así: `!horas ID_DE_DISCORD`");
   }
 
+  const data = cargarHoras();
+
+  if (!data[userId] || data[userId].length === 0) {
+    return message.reply("⚠️ No hay horas registradas para ese ID.");
+  }
+
+  const registros = data[userId];
+
+  let totalGeneral = 0;
+
+  let descripcion = "";
+
+  registros.slice(-10).forEach((r, index) => {
+    totalGeneral += r.total;
+
+    descripcion +=
+      `**${index + 1}. Fecha:** <t:${Math.floor(r.entrada / 1000)}:D>\n` +
+      `🟢 Entrada: <t:${Math.floor(r.entrada / 1000)}:t>\n` +
+      `🔴 Salida: <t:${Math.floor(r.salida / 1000)}:t>\n` +
+      `⏱️ Tiempo: ${formatearTiempo(r.total)}\n\n`;
+  });
+
+  const totalTodas = registros.reduce((acc, r) => acc + r.total, 0);
+
+  const embed = new EmbedBuilder()
+    .setTitle("📒 Horas trabajadas")
+    .setDescription(
+      `👤 Usuario ID: \`${userId}\`\n` +
+      `📌 Registros mostrados: últimos 10\n` +
+      `⏱️ Total acumulado: **${formatearTiempo(totalTodas)}**\n\n` +
+      descripcion
+    )
+    .setColor(0xff7a00);
+
+  return message.reply({ embeds: [embed] });
 });
 
 client.login(TOKEN);
