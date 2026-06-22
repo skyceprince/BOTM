@@ -16,6 +16,9 @@ const PANEL_CHANNEL_ID = "1508935042431455493";
 const LOG_CHANNEL_ID = "1508988018290065539";
 const WORKING_CHANNEL_ID = "1508935220211089599";
 
+// 👑 IDs de los Owners autorizados
+const OWNER_IDS = ["514211424952647683", "538180656958668800"];
+
 const HORAS_FILE = "./horas.json";
 
 const app = express();
@@ -219,50 +222,126 @@ client.on("interactionCreate", async (interaction) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  if (!message.content.startsWith("!horas")) return;
-
   const args = message.content.split(" ");
-  const userId = args[1];
+  const comando = args[0];
 
-  if (!userId) {
-    return message.reply("⚠️ Usa el comando así: `!horas ID_DE_DISCORD`");
+  if (comando === "!horas") {
+    const userId = args[1];
+
+    if (!userId) {
+      return message.reply("⚠️ Usa el comando así: `!horas ID_DE_DISCORD`");
+    }
+
+    const data = cargarHoras();
+
+    if (!data[userId] || data[userId].length === 0) {
+      return message.reply("⚠️ No hay horas registradas para ese ID.");
+    }
+
+    const registros = data[userId];
+
+    let totalGeneral = 0;
+
+    let descripcion = "";
+
+    registros.slice(-10).forEach((r, index) => {
+      totalGeneral += r.total;
+
+      descripcion +=
+        `**${index + 1}. Fecha:** <t:${Math.floor(r.entrada / 1000)}:D>\n` +
+        `🟢 Entrada: <t:${Math.floor(r.entrada / 1000)}:t>\n` +
+        `🔴 Salida: <t:${Math.floor(r.salida / 1000)}:t>\n` +
+        `⏱️ Tiempo: ${formatearTiempo(r.total)}\n\n`;
+    });
+
+    const totalTodas = registros.reduce((acc, r) => acc + r.total, 0);
+
+    const embed = new EmbedBuilder()
+      .setTitle("📒 Horas trabajadas")
+      .setDescription(
+        `👤 Usuario ID: \`${userId}\`\n` +
+        `📌 Registros mostrados: últimos 10\n` +
+        `⏱️ Total acumulado: **${formatearTiempo(totalTodas)}**\n\n` +
+        descripcion
+      )
+      .setColor(0xff7a00);
+
+    return message.reply({ embeds: [embed] });
   }
 
-  const data = cargarHoras();
+  if (comando === "!sacarservicio") {
+    if (!OWNER_IDS.includes(message.author.id)) {
+      return message.reply("❌ No tienes permisos de Owner para usar este comando.");
+    }
 
-  if (!data[userId] || data[userId].length === 0) {
-    return message.reply("⚠️ No hay horas registradas para ese ID.");
+    const targetUserId = args[1];
+
+    if (!targetUserId) {
+      return message.reply("⚠️ Usa el comando así: `!sacarservicio ID_DE_DISCORD`");
+    }
+
+    if (!servicios.has(targetUserId)) {
+      return message.reply("⚠️ Ese usuario no se encuentra en servicio actualmente.");
+    }
+
+    const entrada = servicios.get(targetUserId);
+    const salida = Date.now();
+    const total = salida - entrada;
+
+    servicios.delete(targetUserId);
+
+    let userTag = targetUserId;
+    try {
+      const fetchedUser = await client.users.fetch(targetUserId);
+      userTag = fetchedUser.tag;
+    } catch (e) {
+      userTag = "Usuario Desconocido";
+    }
+
+    const data = cargarHoras();
+    if (!data[targetUserId]) {
+      data[targetUserId] = [];
+    }
+
+    data[targetUserId].push({
+      usuario: userTag,
+      entrada,
+      salida,
+      total,
+      forzadoPor: message.author.tag
+    });
+    guardarHoras(data);
+
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+    const logEmbed = new EmbedBuilder()
+      .setTitle("🛑 Salida Forzada por Administración")
+      .setDescription(
+        `👤 **Trabajador:** <@${targetUserId}>\n` +
+        `🆔 **ID:** ${targetUserId}\n` +
+        `👑 **Cerrado por:** ${message.author}\n\n` +
+        `🕒 **Entrada:** <t:${Math.floor(entrada / 1000)}:t>\n` +
+        `🕒 **Salida:** <t:${Math.floor(salida / 1000)}:t>\n\n` +
+        `⏱️ **Tiempo acumulado:** ${formatearTiempo(total)}`
+      )
+      .setColor(0xd9534f);
+
+    await logChannel.send({ embeds: [logEmbed] });
+
+    const workingChannel = await client.channels.fetch(WORKING_CHANNEL_ID);
+    const workingMessageId = mensajesTrabajando.get(targetUserId);
+
+    if (workingMessageId) {
+      try {
+        const msg = await workingChannel.messages.fetch(workingMessageId);
+        await msg.delete();
+      } catch (error) {
+        console.log("No se pudo borrar el mensaje en sacarservicio:", error.message);
+      }
+      mensajesTrabajando.delete(targetUserId);
+    }
+
+    return message.reply(`✅ Has cerrado la bitácora del usuario <@${targetUserId}> de forma correcta. Tiempo: **${formatearTiempo(total)}**.`);
   }
-
-  const registros = data[userId];
-
-  let totalGeneral = 0;
-
-  let descripcion = "";
-
-  registros.slice(-10).forEach((r, index) => {
-    totalGeneral += r.total;
-
-    descripcion +=
-      `**${index + 1}. Fecha:** <t:${Math.floor(r.entrada / 1000)}:D>\n` +
-      `🟢 Entrada: <t:${Math.floor(r.entrada / 1000)}:t>\n` +
-      `🔴 Salida: <t:${Math.floor(r.salida / 1000)}:t>\n` +
-      `⏱️ Tiempo: ${formatearTiempo(r.total)}\n\n`;
-  });
-
-  const totalTodas = registros.reduce((acc, r) => acc + r.total, 0);
-
-  const embed = new EmbedBuilder()
-    .setTitle("📒 Horas trabajadas")
-    .setDescription(
-      `👤 Usuario ID: \`${userId}\`\n` +
-      `📌 Registros mostrados: últimos 10\n` +
-      `⏱️ Total acumulado: **${formatearTiempo(totalTodas)}**\n\n` +
-      descripcion
-    )
-    .setColor(0xff7a00);
-
-  return message.reply({ embeds: [embed] });
 });
 
 client.login(TOKEN);
